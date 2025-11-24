@@ -2,8 +2,6 @@ pipeline {
   agent any
   environment {
     IMAGE_NAME = "my-sample-app"
-    DOCKER_REGISTRY = credentials('docker-registry-url') ?: ''
-    DOCKER_CREDENTIALS = credentials('docker-credentials') ?: ''
   }
   
   // Automatic triggers when code is merged to main branch
@@ -113,17 +111,6 @@ pipeline {
           
           echo "Docker image saved successfully: ${tarFileName}"
           echo "Image tags: ${imageTag}, ${imageTagLatest}"
-          
-          // Optional: Push to Docker registry if configured
-          if (env.DOCKER_REGISTRY && env.DOCKER_CREDENTIALS) {
-            echo "Pushing image to registry..."
-            sh """
-              docker tag ${imageTag} ${DOCKER_REGISTRY}/${imageTag}
-              docker tag ${imageTagLatest} ${DOCKER_REGISTRY}/${imageTagLatest}
-              docker push ${DOCKER_REGISTRY}/${imageTag}
-              docker push ${DOCKER_REGISTRY}/${imageTagLatest}
-            """
-          }
         }
       }
     }
