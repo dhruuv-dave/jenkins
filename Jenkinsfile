@@ -42,16 +42,23 @@ pipeline {
       steps {
         script {
           // For multibranch pipelines, BRANCH_NAME is set by Jenkins
-          def branchName = (env.BRANCH_NAME ?: '').toLowerCase().replaceAll('origin/', '').replaceAll('remotes/', '')
-          def isMainBranch = branchName == 'main' || branchName == 'master' || 
-                            branchName.endsWith('/main') || branchName.endsWith('/master')
+          def branchName = (env.BRANCH_NAME ?: '').toLowerCase().replaceAll('origin/', '').replaceAll('remotes/', '').replaceAll('^.*/', '')
           
-          echo "Branch detected: ${branchName}"
+          // Debug: Print all environment variables related to branch
+          echo "DEBUG INFO:"
+          echo "  BRANCH_NAME: ${env.BRANCH_NAME}"
+          echo "  Normalized branch: ${branchName}"
+          echo "  GIT_BRANCH: ${env.GIT_BRANCH ?: 'not set'}"
+          
+          def isMainBranch = branchName == 'main' || branchName == 'master'
+          
+          echo "Branch detected: '${branchName}'"
           echo "Is main branch: ${isMainBranch}"
           
           if (!isMainBranch) {
-            echo "⚠️ Skipping Docker build - not on main/master branch"
+            echo "⚠️ SKIPPING Docker build - not on main/master branch"
             echo "Current branch: '${branchName}'"
+            echo "Expected: 'main' or 'master'"
             return
           }
           
@@ -79,12 +86,12 @@ pipeline {
     stage('Save Docker image') {
       steps {
         script {
-          def branchName = env.BRANCH_NAME.toLowerCase()
-          def isMainBranch = branchName == 'main' || branchName == 'master' || 
-                            branchName.contains('main') || branchName.contains('master')
+          def branchName = (env.BRANCH_NAME ?: '').toLowerCase().replaceAll('origin/', '').replaceAll('remotes/', '').replaceAll('^.*/', '')
+          def isMainBranch = branchName == 'main' || branchName == 'master'
           
           if (!isMainBranch) {
-            echo "Skipping Docker save - not on main/master branch"
+            echo "⚠️ Skipping Docker save - not on main/master branch"
+            echo "Current branch: '${branchName}'"
             return
           }
           def shortCommit = sh(script: "echo ${GIT_COMMIT} | cut -c1-7", returnStdout: true).trim()
@@ -124,12 +131,11 @@ pipeline {
     stage('List Docker images') {
       steps {
         script {
-          def branchName = env.BRANCH_NAME.toLowerCase()
-          def isMainBranch = branchName == 'main' || branchName == 'master' || 
-                            branchName.contains('main') || branchName.contains('master')
+          def branchName = (env.BRANCH_NAME ?: '').toLowerCase().replaceAll('origin/', '').replaceAll('remotes/', '').replaceAll('^.*/', '')
+          def isMainBranch = branchName == 'main' || branchName == 'master'
           
           if (!isMainBranch) {
-            echo "Skipping image listing - not on main/master branch"
+            echo "⚠️ Skipping image listing - not on main/master branch"
             return
           }
           sh 'docker images | grep ${IMAGE_NAME} || true'
