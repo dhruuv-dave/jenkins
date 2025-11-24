@@ -6,10 +6,14 @@ pipeline {
     DOCKER_CREDENTIALS = credentials('docker-credentials') ?: ''
   }
   
-  // Trigger when changes are pushed to main branch (e.g., when staging is merged to main)
+  // Automatic triggers when code is merged to main branch
   triggers {
-    // Poll SCM every minute (adjust as needed)
-    pollSCM('H/5 * * * *')
+    // Poll SCM every 2 minutes to automatically detect changes (fallback if webhooks not configured)
+    pollSCM('H/2 * * * *')
+    
+    // For GitHub/GitLab webhooks, configure in Jenkins job settings:
+    // Jenkins -> Your Job -> Configure -> Build Triggers -> 
+    // Check "GitHub hook trigger for GITScm polling" or "Build when a change is pushed to GitLab"
   }
   
   stages {
@@ -17,30 +21,48 @@ pipeline {
       steps {
         checkout scm
         script {
+          // For multibranch pipelines, BRANCH_NAME is automatically set
+          // If not set, get it from git
           def branchName = env.BRANCH_NAME ?: sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
+          
+          // Normalize branch name (remove origin/ prefix if present)
+          branchName = branchName.replaceAll('origin/', '').replaceAll('remotes/', '').replaceAll('^.*/', '')
           env.BRANCH_NAME = branchName
-          echo "Checked out branch: ${branchName} at commit ${GIT_COMMIT}"
+          
+          echo "=========================================="
+          echo "Checked out branch: ${branchName}"
+          echo "Commit: ${GIT_COMMIT}"
+          echo "Build Number: ${env.BUILD_NUMBER}"
+          echo "=========================================="
         }
       }
     }
     
     stage('Build Docker image') {
-      when {
-        anyOf {
-          branch 'main'
-          branch 'master'
-          branch 'origin/main'
-          branch 'origin/master'
-        }
-      }
       steps {
         script {
+          // For multibranch pipelines, BRANCH_NAME is set by Jenkins
+          def branchName = (env.BRANCH_NAME ?: '').toLowerCase().replaceAll('origin/', '').replaceAll('remotes/', '')
+          def isMainBranch = branchName == 'main' || branchName == 'master' || 
+                            branchName.endsWith('/main') || branchName.endsWith('/master')
+          
+          echo "Branch detected: ${branchName}"
+          echo "Is main branch: ${isMainBranch}"
+          
+          if (!isMainBranch) {
+            echo "⚠️ Skipping Docker build - not on main/master branch"
+            echo "Current branch: '${branchName}'"
+            return
+          }
+          
+          echo "✅ Building Docker image for main branch..."
           def shortCommit = sh(script: "echo ${GIT_COMMIT} | cut -c1-7", returnStdout: true).trim()
-          def branchName = env.BRANCH_NAME.replaceAll('/', '-')
           def imageTag = "${IMAGE_NAME}:main-${shortCommit}"
           def imageTagLatest = "${IMAGE_NAME}:main-latest"
           
           echo "Building Docker image for main branch (after staging merge)..."
+          echo "Image tags: ${imageTag}, ${imageTagLatest}"
+          
           sh """
             docker build -t ${imageTag} -t ${imageTagLatest} .
           """
@@ -48,21 +70,23 @@ pipeline {
           // Save image metadata
           env.DOCKER_IMAGE_TAG = imageTag
           env.DOCKER_IMAGE_LATEST = imageTagLatest
+          
+          echo "Docker image built successfully!"
         }
       }
     }
     
     stage('Save Docker image') {
-      when {
-        anyOf {
-          branch 'main'
-          branch 'master'
-          branch 'origin/main'
-          branch 'origin/master'
-        }
-      }
       steps {
         script {
+          def branchName = env.BRANCH_NAME.toLowerCase()
+          def isMainBranch = branchName == 'main' || branchName == 'master' || 
+                            branchName.contains('main') || branchName.contains('master')
+          
+          if (!isMainBranch) {
+            echo "Skipping Docker save - not on main/master branch"
+            return
+          }
           def shortCommit = sh(script: "echo ${GIT_COMMIT} | cut -c1-7", returnStdout: true).trim()
           def imageTag = "${IMAGE_NAME}:main-${shortCommit}"
           def imageTagLatest = "${IMAGE_NAME}:main-latest"
@@ -98,16 +122,18 @@ pipeline {
     }
     
     stage('List Docker images') {
-      when {
-        anyOf {
-          branch 'main'
-          branch 'master'
-          branch 'origin/main'
-          branch 'origin/master'
-        }
-      }
       steps {
-        sh 'docker images | grep ${IMAGE_NAME} || true'
+        script {
+          def branchName = env.BRANCH_NAME.toLowerCase()
+          def isMainBranch = branchName == 'main' || branchName == 'master' || 
+                            branchName.contains('main') || branchName.contains('master')
+          
+          if (!isMainBranch) {
+            echo "Skipping image listing - not on main/master branch"
+            return
+          }
+          sh 'docker images | grep ${IMAGE_NAME} || true'
+        }
       }
     }
   }
