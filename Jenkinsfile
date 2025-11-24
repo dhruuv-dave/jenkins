@@ -1,7 +1,17 @@
 pipeline {
   agent any
+  
   environment {
-    IMAGE_NAME = "my-sample-app"
+    // Docker image name - automatically uses Jenkins job name
+    // To customize, set IMAGE_NAME in Jenkins job configuration -> Environment variables
+    IMAGE_NAME = "${env.JOB_NAME.split('/').last().toLowerCase().replaceAll(' ', '-')}"
+    DOCKER_BUILDKIT = "1"
+  }
+  
+  options {
+    timeout(time: 30, unit: 'MINUTES')
+    retry(1)
+    timestamps()
   }
   
   // Automatic triggers when code is merged to main branch
@@ -15,22 +25,49 @@ pipeline {
   }
   
   stages {
+    stage('Validate Environment') {
+      steps {
+        script {
+          // Validate Docker is available and accessible
+          def dockerAvailable = sh(script: 'command -v docker', returnStdout: true).trim()
+          if (!dockerAvailable) {
+            error("Docker is not installed or not in PATH. Please install Docker on the Jenkins agent.")
+          }
+          
+          // Check Docker daemon is running and accessible
+          def dockerInfo = sh(script: 'docker info', returnStdout: true, returnStatus: true)
+          if (dockerInfo != 0) {
+            error("Docker daemon is not accessible. Please ensure:\n" +
+                  "1. Docker is installed and running\n" +
+                  "2. Jenkins user is added to docker group: sudo usermod -aG docker jenkins\n" +
+                  "3. Jenkins service is restarted after adding user to docker group")
+          }
+          
+          echo "✅ Docker validation passed"
+          sh 'docker --version'
+          sh 'docker info | head -5'
+        }
+      }
+    }
+    
     stage('Checkout') {
       steps {
         checkout scm
         script {
-          // For multibranch pipelines, BRANCH_NAME is automatically set
-          // If not set, get it from git
-          def branchName = env.BRANCH_NAME ?: sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
+          // For multibranch pipelines, BRANCH_NAME is automatically set by Jenkins
+          // Also check GIT_BRANCH which might be set
+          def branchName = env.BRANCH_NAME ?: env.GIT_BRANCH ?: sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
           
-          // Normalize branch name (remove origin/ prefix if present)
-          branchName = branchName.replaceAll('origin/', '').replaceAll('remotes/', '').replaceAll('^.*/', '')
+          // Normalize branch name (remove origin/, remotes/, and any path prefixes)
+          branchName = branchName.replaceAll('origin/', '').replaceAll('remotes/', '').replaceAll('^.*/', '').trim()
           env.BRANCH_NAME = branchName
           
           echo "=========================================="
           echo "Checked out branch: ${branchName}"
           echo "Commit: ${GIT_COMMIT}"
           echo "Build Number: ${env.BUILD_NUMBER}"
+          echo "Original BRANCH_NAME: ${env.BRANCH_NAME ?: 'not set'}"
+          echo "Original GIT_BRANCH: ${env.GIT_BRANCH ?: 'not set'}"
           echo "=========================================="
         }
       }
@@ -39,8 +76,8 @@ pipeline {
     stage('Build Docker image') {
       steps {
         script {
-          // For multibranch pipelines, BRANCH_NAME is set by Jenkins
-          def branchName = (env.BRANCH_NAME ?: '').toLowerCase().replaceAll('origin/', '').replaceAll('remotes/', '').replaceAll('^.*/', '')
+          // Get branch name from environment (set in Checkout stage)
+          def branchName = (env.BRANCH_NAME ?: '').toLowerCase().trim()
           
           // Debug: Print all environment variables related to branch
           echo "DEBUG INFO:"
@@ -48,6 +85,7 @@ pipeline {
           echo "  Normalized branch: ${branchName}"
           echo "  GIT_BRANCH: ${env.GIT_BRANCH ?: 'not set'}"
           
+          // Check if this is the main branch (exact match after normalization)
           def isMainBranch = branchName == 'main' || branchName == 'master'
           
           echo "Branch detected: '${branchName}'"
@@ -68,15 +106,38 @@ pipeline {
           echo "Building Docker image for main branch (after staging merge)..."
           echo "Image tags: ${imageTag}, ${imageTagLatest}"
           
-          sh """
-            docker build -t ${imageTag} -t ${imageTagLatest} .
-          """
+          // Build Docker image with proper error handling
+          def buildResult = sh(
+            script: """
+              docker build \
+                --tag ${imageTag} \
+                --tag ${imageTagLatest} \
+                --progress=plain \
+                .
+            """,
+            returnStatus: true
+          )
+          
+          if (buildResult != 0) {
+            error("Docker build failed with exit code ${buildResult}. Check the build logs above for details.")
+          }
+          
+          // Verify image was created
+          def imageExists = sh(
+            script: "docker images -q ${imageTag}",
+            returnStdout: true
+          ).trim()
+          
+          if (!imageExists) {
+            error("Docker image ${imageTag} was not created after build. Build may have failed silently.")
+          }
           
           // Save image metadata
           env.DOCKER_IMAGE_TAG = imageTag
           env.DOCKER_IMAGE_LATEST = imageTagLatest
           
-          echo "Docker image built successfully!"
+          echo "✅ Docker image built successfully!"
+          sh "docker images ${IMAGE_NAME} | head -3"
         }
       }
     }
@@ -101,15 +162,31 @@ pipeline {
           def tarFileName = "${IMAGE_NAME}-main-${shortCommit}-${timestamp}.tar"
           
           echo "Saving Docker image to tar file: ${tarFileName}"
-          sh """
-            docker save -o ${tarFileName} ${imageTag}
-            ls -lh ${tarFileName}
-          """
+          def saveResult = sh(
+            script: "docker save -o ${tarFileName} ${imageTag}",
+            returnStatus: true
+          )
+          
+          if (saveResult != 0) {
+            error("Failed to save Docker image to ${tarFileName}")
+          }
+          
+          // Verify tar file was created and has content
+          def tarSize = sh(
+            script: "ls -lh ${tarFileName} | awk '{print \$5}'",
+            returnStdout: true
+          ).trim()
+          
+          if (!tarSize || tarSize == "0") {
+            error("Docker image tar file ${tarFileName} is empty or was not created")
+          }
+          
+          echo "Image tar file size: ${tarSize}"
           
           // Archive the tar file
           archiveArtifacts artifacts: "${tarFileName}", allowEmptyArchive: false
           
-          echo "Docker image saved successfully: ${tarFileName}"
+          echo "✅ Docker image saved successfully: ${tarFileName}"
           echo "Image tags: ${imageTag}, ${imageTagLatest}"
         }
       }
@@ -125,7 +202,7 @@ pipeline {
             echo "⚠️ Skipping image listing - not on main/master branch"
             return
           }
-          sh 'docker images | grep ${IMAGE_NAME} || true'
+          sh "docker images ${IMAGE_NAME} | head -10"
         }
       }
     }
@@ -134,8 +211,20 @@ pipeline {
   post {
     success {
       script {
-        echo "Pipeline succeeded. Docker image saved for main branch (after staging merge)."
+        echo "=========================================="
+        echo "✅ Pipeline succeeded!"
+        echo "Docker image saved for main branch (after staging merge)."
         echo "Image: ${env.DOCKER_IMAGE_TAG}"
+        echo "Latest: ${env.DOCKER_IMAGE_LATEST}"
+        echo "=========================================="
+      }
+    }
+    failure {
+      script {
+        echo "=========================================="
+        echo "❌ Pipeline failed!"
+        echo "Check the console output above for error details."
+        echo "=========================================="
       }
     }
     always {

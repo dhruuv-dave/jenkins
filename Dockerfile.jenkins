@@ -1,0 +1,24 @@
+FROM jenkins/jenkins:lts
+
+USER root
+
+# Install Docker CLI
+RUN apt-get update && \
+    apt-get install -y docker.io && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create entrypoint script to fix Docker socket permissions
+RUN echo '#!/bin/bash\n\
+# Fix Docker socket permissions for Windows Docker Desktop\n\
+if [ -e /var/run/docker.sock ]; then\n\
+    chmod 666 /var/run/docker.sock\n\
+fi\n\
+# Start Jenkins\n\
+exec /usr/local/bin/jenkins.sh "$@"' > /usr/local/bin/entrypoint.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh
+
+USER jenkins
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
