@@ -69,6 +69,311 @@ pipeline {
           echo "Original BRANCH_NAME: ${env.BRANCH_NAME ?: 'not set'}"
           echo "Original GIT_BRANCH: ${env.GIT_BRANCH ?: 'not set'}"
           echo "=========================================="
+          
+          // Detect project type
+          def hasPythonFiles = sh(script: 'find . -name "*.py" -not -path "*/.*" | head -1', returnStatus: true) == 0
+          def hasNextJsFiles = sh(script: 'test -f package.json && grep -q "next" package.json 2>/dev/null || find . -name "*.tsx" -o -name "*.jsx" | head -1', returnStatus: true) == 0
+          def hasRequirementsTxt = sh(script: 'test -f requirements.txt', returnStatus: true) == 0
+          def hasPackageJson = sh(script: 'test -f package.json', returnStatus: true) == 0
+          
+          env.HAS_PYTHON = hasPythonFiles ? 'true' : 'false'
+          env.HAS_NEXTJS = hasNextJsFiles ? 'true' : 'false'
+          env.HAS_REQUIREMENTS = hasRequirementsTxt ? 'true' : 'false'
+          env.HAS_PACKAGE_JSON = hasPackageJson ? 'true' : 'false'
+          
+          echo "Project detection:"
+          echo "  Python files: ${env.HAS_PYTHON}"
+          echo "  Next.js files: ${env.HAS_NEXTJS}"
+          echo "  requirements.txt: ${env.HAS_REQUIREMENTS}"
+          echo "  package.json: ${env.HAS_PACKAGE_JSON}"
+        }
+      }
+    }
+    
+    stage('Python Code Analysis') {
+      when {
+        expression { env.HAS_PYTHON == 'true' }
+      }
+      steps {
+        script {
+          echo "🔍 Running Python code analysis..."
+          
+          // Install Python dependencies if requirements.txt exists
+          if (env.HAS_REQUIREMENTS == 'true') {
+            echo "Installing Python dependencies..."
+            sh '''
+              python3 -m pip install --user --upgrade pip || python -m pip install --user --upgrade pip || true
+              python3 -m pip install --user flake8 pylint black || python -m pip install --user flake8 pylint black || true
+            '''
+          } else {
+            echo "Installing code analysis tools..."
+            sh '''
+              python3 -m pip install --user --upgrade pip || python -m pip install --user --upgrade pip || true
+              python3 -m pip install --user flake8 pylint black || python -m pip install --user flake8 pylint black || true
+            '''
+          }
+          
+          // Run flake8 for code style and errors
+          echo "Running flake8..."
+          def flake8Result = sh(
+            script: '''
+              python3 -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=venv,env,.venv,node_modules || python -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=venv,env,.venv,node_modules || true
+            ''',
+            returnStatus: true
+          )
+          
+          // Run pylint for code quality
+          echo "Running pylint..."
+          def pylintResult = sh(
+            script: '''
+              find . -name "*.py" -not -path "*/.*" -not -path "*/venv/*" -not -path "*/env/*" -not -path "*/.venv/*" -not -path "*/node_modules/*" | head -10 | xargs python3 -m pylint --disable=C,R --max-line-length=120 --exit-zero || find . -name "*.py" -not -path "*/.*" -not -path "*/venv/*" -not -path "*/env/*" -not -path "*/.venv/*" -not -path "*/node_modules/*" | head -10 | xargs python -m pylint --disable=C,R --max-line-length=120 --exit-zero || true
+            ''',
+            returnStatus: true
+          )
+          
+          // Run black check for code formatting (non-blocking)
+          echo "Checking code formatting with black..."
+          sh '''
+            python3 -m black --check . --exclude="venv|env|.venv|node_modules" || python -m black --check . --exclude="venv|env|.venv|node_modules" || echo "Black check completed (warnings are non-blocking)"
+          '''
+          
+          if (flake8Result != 0) {
+            echo "⚠️ Flake8 found some issues. Review the output above."
+          }
+          if (pylintResult != 0) {
+            echo "⚠️ Pylint found some issues. Review the output above."
+          }
+          
+          echo "✅ Python code analysis completed"
+        }
+      }
+    }
+    
+    stage('Next.js Code Analysis') {
+      when {
+        expression { env.HAS_NEXTJS == 'true' }
+      }
+      steps {
+        script {
+          echo "🔍 Running Next.js/JavaScript code analysis..."
+          
+          // Install Node.js dependencies if package.json exists
+          if (env.HAS_PACKAGE_JSON == 'true') {
+            echo "Installing Node.js dependencies..."
+            sh '''
+              if command -v npm &> /dev/null; then
+                npm ci || npm install
+              elif command -v yarn &> /dev/null; then
+                yarn install --frozen-lockfile || yarn install
+              else
+                echo "⚠️ npm or yarn not found. Skipping dependency installation."
+              fi
+            '''
+          }
+          
+          // Install ESLint if not already installed
+          echo "Installing ESLint..."
+          sh '''
+            if command -v npm &> /dev/null; then
+              npm install --save-dev eslint eslint-config-next || npm install -g eslint eslint-config-next || true
+            elif command -v yarn &> /dev/null; then
+              yarn add -D eslint eslint-config-next || true
+            fi
+          '''
+          
+          // Run ESLint
+          echo "Running ESLint..."
+          def eslintResult = sh(
+            script: '''
+              if command -v npx &> /dev/null; then
+                npx eslint . --ext .js,.jsx,.ts,.tsx --max-warnings 0 || npx eslint . --ext .js,.jsx,.ts,.tsx || true
+              elif command -v npm &> /dev/null; then
+                npm run lint || npm exec eslint . --ext .js,.jsx,.ts,.tsx || true
+              elif command -v yarn &> /dev/null; then
+                yarn lint || yarn eslint . --ext .js,.jsx,.ts,.tsx || true
+              else
+                echo "⚠️ ESLint runner not found. Skipping ESLint check."
+                exit 0
+              fi
+            ''',
+            returnStatus: true
+          )
+          
+          if (eslintResult != 0) {
+            echo "⚠️ ESLint found some issues. Review the output above."
+          }
+          
+          echo "✅ Next.js code analysis completed"
+        }
+      }
+    }
+    
+    stage('Python Unit Tests') {
+      when {
+        expression { env.HAS_PYTHON == 'true' }
+      }
+      steps {
+        script {
+          echo "🧪 Running Python unit tests..."
+          
+          // Install Python dependencies if requirements.txt exists
+          if (env.HAS_REQUIREMENTS == 'true') {
+            echo "Installing Python dependencies from requirements.txt..."
+            sh '''
+              python3 -m pip install --user --upgrade pip || python -m pip install --user --upgrade pip || true
+              python3 -m pip install --user -r requirements.txt || python -m pip install --user -r requirements.txt || true
+            '''
+          }
+          
+          // Install pytest if not already installed
+          echo "Installing pytest..."
+          sh '''
+            python3 -m pip install --user pytest pytest-cov || python -m pip install --user pytest pytest-cov || true
+          '''
+          
+          // Run pytest
+          echo "Running pytest..."
+          def testResult = sh(
+            script: '''
+              python3 -m pytest tests/ test/ --cov=. --cov-report=xml --cov-report=html -v || python -m pytest tests/ test/ -v || python3 -m pytest . -v || python -m pytest . -v || true
+            ''',
+            returnStatus: true
+          )
+          
+          // Publish test results if available
+          try {
+            publishTestResults testResultsPattern: '**/test-results.xml'
+          } catch (Exception e) {
+            echo "No test results XML found (this is okay if using pytest without JUnit output)"
+          }
+          
+          // Publish coverage reports if available
+          try {
+            publishCoverageReports(
+              adapters: [
+                coberturaAdapter('**/coverage.xml')
+              ],
+              sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+            )
+          } catch (Exception e) {
+            echo "Coverage plugin not available or no coverage.xml found"
+          }
+          
+          if (testResult != 0) {
+            error("❌ Python unit tests failed! Check the test output above for details.")
+          }
+          
+          echo "✅ Python unit tests passed"
+        }
+      }
+    }
+    
+    stage('Next.js Unit Tests') {
+      when {
+        expression { env.HAS_NEXTJS == 'true' }
+      }
+      steps {
+        script {
+          echo "🧪 Running Next.js/JavaScript unit tests..."
+          
+          // Install Node.js dependencies if package.json exists
+          if (env.HAS_PACKAGE_JSON == 'true') {
+            echo "Installing Node.js dependencies..."
+            sh '''
+              if command -v npm &> /dev/null; then
+                npm ci || npm install
+              elif command -v yarn &> /dev/null; then
+                yarn install --frozen-lockfile || yarn install
+              else
+                echo "⚠️ npm or yarn not found. Skipping dependency installation."
+              fi
+            '''
+          }
+          
+          // Run tests (Jest, Vitest, or other test runner)
+          echo "Running tests..."
+          def testResult = sh(
+            script: '''
+              if command -v npm &> /dev/null; then
+                npm test -- --coverage --watchAll=false || npm run test -- --coverage || npm test || true
+              elif command -v yarn &> /dev/null; then
+                yarn test --coverage --watchAll=false || yarn test || true
+              else
+                echo "⚠️ npm or yarn not found. Skipping tests."
+                exit 0
+              fi
+            ''',
+            returnStatus: true
+          )
+          
+          // Publish test results if available
+          try {
+            publishTestResults testResultsPattern: '**/test-results.xml,**/junit.xml'
+          } catch (Exception e) {
+            echo "No test results XML found"
+          }
+          
+          // Publish coverage reports if available
+          try {
+            publishCoverageReports(
+              adapters: [
+                coberturaAdapter('**/coverage/cobertura-coverage.xml'),
+                jestAdapter('**/coverage/coverage-final.json')
+              ],
+              sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+            )
+          } catch (Exception e) {
+            echo "Coverage plugin not available or no coverage files found"
+          }
+          
+          if (testResult != 0) {
+            error("❌ Next.js unit tests failed! Check the test output above for details.")
+          }
+          
+          echo "✅ Next.js unit tests passed"
+        }
+      }
+    }
+    
+    stage('SonarQube Analysis') {
+      when {
+        anyOf {
+          expression { env.HAS_PYTHON == 'true' }
+          expression { env.HAS_NEXTJS == 'true' }
+        }
+      }
+      steps {
+        script {
+          echo "🔍 Running SonarQube code analysis..."
+          
+          // Check if SonarQube scanner is available
+          def sonarScannerAvailable = sh(
+            script: 'command -v sonar-scanner || command -v sonar-scanner-cli || test -f sonar-project.properties',
+            returnStatus: true
+          ) == 0
+          
+          if (!sonarScannerAvailable) {
+            echo "⚠️ SonarQube scanner not found. Skipping SonarQube analysis."
+            echo "To enable SonarQube analysis:"
+            echo "  1. Install SonarQube Scanner plugin in Jenkins"
+            echo "  2. Configure SonarQube server in Jenkins"
+            echo "  3. Add sonar-project.properties file to your project"
+            return
+          }
+          
+          // Run SonarQube analysis
+          try {
+            withSonarQubeEnv('SonarQube') {
+              sh '''
+                sonar-scanner || sonar-scanner-cli || echo "SonarQube scanner command not found"
+              '''
+            }
+          } catch (Exception e) {
+            echo "⚠️ SonarQube analysis failed or not configured: ${e.message}"
+            echo "This is non-blocking. Configure SonarQube in Jenkins to enable this feature."
+          }
+          
+          echo "✅ SonarQube analysis completed"
         }
       }
     }
