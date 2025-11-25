@@ -1,0 +1,12 @@
+# Python dependencies for the project
+# These will be installed by Jenkins during the pipeline
+
+# Testing framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Code quality tools (for Jenkins code analysis)
+flake8>=6.1.0
+pylint>=3.0.0
+black>=23.9.0
+
