@@ -1,3 +1,4 @@
+version: '3.8'
 services:
   jenkins:
     image: jenkins/jenkins:lts
@@ -7,11 +8,10 @@ services:
       - "50000:50000"
     volumes:
       - jenkins_home:/var/jenkins_home
-      # Docker socket - works on both Linux and Windows Docker Desktop
+      # Docker socket - Linux path
       - /var/run/docker.sock:/var/run/docker.sock
-      # Docker binary - Windows Docker Desktop doesn't need this
-      # On Ubuntu/Linux, use docker-compose.ubuntu.yml instead
-      # - /usr/bin/docker:/usr/bin/docker:ro
+      # Docker binary - needed on Linux
+      - /usr/bin/docker:/usr/bin/docker:ro
       # Entrypoint script to fix Docker socket permissions on startup
       - ./jenkins-entrypoint.sh:/usr/local/bin/jenkins-entrypoint.sh:ro
     # Use custom entrypoint that fixes permissions before starting Jenkins
@@ -22,3 +22,4 @@ services:
 
 volumes:
   jenkins_home:
+
