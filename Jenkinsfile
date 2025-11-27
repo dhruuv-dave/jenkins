@@ -28,23 +28,63 @@ pipeline {
     stage('Validate Environment') {
       steps {
         script {
-          // Validate Docker is available and accessible
-          def dockerAvailable = sh(script: 'command -v docker', returnStdout: true).trim()
-          if (!dockerAvailable) {
-            error("Docker is not installed or not in PATH. Please install Docker on the Jenkins agent.")
+          echo "🔍 Validating Docker environment..."
+          
+          // Check if Docker command exists
+          def dockerCheck = sh(script: 'command -v docker || which docker || echo "NOT_FOUND"', returnStdout: true).trim()
+          if (dockerCheck == "NOT_FOUND" || !dockerCheck) {
+            echo "❌ ERROR: Docker command not found!"
+            echo "Docker path check result: '${dockerCheck}'"
+            echo ""
+            echo "SOLUTION:"
+            echo "1. If using Docker Compose, rebuild the Jenkins image:"
+            echo "   docker-compose build jenkins"
+            echo "   docker-compose up -d"
+            echo ""
+            echo "2. If Jenkins is running directly on host, install Docker:"
+            echo "   sudo apt-get update && sudo apt-get install -y docker.io"
+            echo ""
+            echo "3. Check PATH:"
+            sh 'echo $PATH'
+            error("Docker is not installed or not in PATH. See error details above.")
+          }
+          
+          echo "✅ Docker command found at: ${dockerCheck}"
+          
+          // Check Docker version
+          try {
+            def dockerVersion = sh(script: 'docker --version', returnStdout: true).trim()
+            echo "Docker version: ${dockerVersion}"
+          } catch (Exception e) {
+            echo "⚠️  Warning: Could not get Docker version"
           }
           
           // Check Docker daemon is running and accessible
-          def dockerInfo = sh(script: 'docker info', returnStdout: true, returnStatus: true)
+          echo "Checking Docker daemon connectivity..."
+          def dockerInfo = sh(script: 'docker info 2>&1', returnStdout: true, returnStatus: true)
           if (dockerInfo != 0) {
-            error("Docker daemon is not accessible. Please ensure:\n" +
-                  "1. Docker is installed and running\n" +
-                  "2. Jenkins user is added to docker group: sudo usermod -aG docker jenkins\n" +
-                  "3. Jenkins service is restarted after adding user to docker group")
+            def dockerError = sh(script: 'docker info 2>&1', returnStdout: true).trim()
+            echo "❌ ERROR: Docker daemon is not accessible!"
+            echo "Docker info error output:"
+            echo "${dockerError}"
+            echo ""
+            echo "SOLUTION:"
+            echo "1. Ensure Docker socket is mounted in Jenkins container:"
+            echo "   - /var/run/docker.sock:/var/run/docker.sock"
+            echo ""
+            echo "2. Check Docker socket permissions:"
+            sh 'ls -la /var/run/docker.sock || echo "Docker socket not found"'
+            echo ""
+            echo "3. If using Docker Compose, ensure docker-compose.yml includes:"
+            echo "   volumes:"
+            echo "     - /var/run/docker.sock:/var/run/docker.sock"
+            echo ""
+            echo "4. Restart Jenkins container:"
+            echo "   docker-compose restart jenkins"
+            error("Docker daemon is not accessible. See troubleshooting steps above.")
           }
           
           echo "✅ Docker validation passed"
-          sh 'docker --version'
           sh 'docker info | head -5'
         }
       }
@@ -52,7 +92,86 @@ pipeline {
     
     stage('Checkout') {
       steps {
-        checkout scm
+        script {
+          echo "📥 Checking out source code..."
+          
+          // Clean up workspace if it's in a bad state
+          def isGitRepo = sh(script: 'test -d .git && git rev-parse --git-dir > /dev/null 2>&1', returnStatus: true) == 0
+          if (!isGitRepo) {
+            echo "⚠️  Workspace is not a valid git repository. Cleaning up..."
+            // Remove any partial git files and workspace contents
+            sh '''
+              rm -rf .git .gitignore 2>/dev/null || true
+              # Remove all files except Jenkins-specific directories
+              find . -mindepth 1 -maxdepth 1 ! -name '..' ! -name '.' -exec rm -rf {} + 2>/dev/null || true
+            '''
+            // Try to use workspace cleanup plugin if available, otherwise manual cleanup above is sufficient
+            try {
+              cleanWs()
+            } catch (Exception e) {
+              echo "Workspace cleanup plugin not available, using manual cleanup"
+            }
+          }
+          
+          // Perform checkout with retry logic
+          def checkoutAttempts = 3
+          def checkoutSuccess = false
+          
+          for (int i = 1; i <= checkoutAttempts; i++) {
+            try {
+              echo "Checkout attempt ${i}/${checkoutAttempts}..."
+              
+              // Use checkout scm which uses Jenkins job configuration
+              checkout scm
+              
+              // Verify checkout was successful
+              def gitStatus = sh(script: 'git rev-parse --is-inside-work-tree 2>/dev/null', returnStdout: true).trim()
+              if (gitStatus == "true") {
+                checkoutSuccess = true
+                break
+              }
+            } catch (Exception e) {
+              echo "⚠️  Checkout attempt ${i} failed: ${e.message}"
+              if (i < checkoutAttempts) {
+                echo "Retrying in 2 seconds..."
+                sleep(2)
+                // Clean workspace before retry
+                try {
+                  cleanWs()
+                } catch (Exception cleanupError) {
+                  // Manual cleanup if plugin not available
+                  sh 'rm -rf .git .gitignore * .* 2>/dev/null || true'
+                }
+              }
+            }
+          }
+          
+          if (!checkoutSuccess) {
+            echo "❌ ERROR: Git checkout failed after ${checkoutAttempts} attempts!"
+            echo ""
+            echo "TROUBLESHOOTING:"
+            echo "1. Check Jenkins job configuration:"
+            echo "   - Go to Jenkins → Your Job → Configure"
+            echo "   - Verify 'Source Code Management' section is configured correctly"
+            echo "   - Check repository URL and credentials"
+            echo ""
+            echo "2. Clean workspace manually:"
+            echo "   - Go to Jenkins → Your Job → Workspace"
+            echo "   - Click 'Wipe Out Current Workspace'"
+            echo "   - Or run: docker exec jenkins rm -rf /var/jenkins_home/workspace/my-sample-app_main"
+            echo ""
+            echo "3. Check Git credentials:"
+            echo "   - Verify GitHub token has correct permissions"
+            echo "   - Check credential ID matches in job configuration"
+            echo ""
+            echo "4. Verify repository access:"
+            sh 'echo "Current directory: $(pwd)"'
+            sh 'ls -la || echo "Directory listing failed"'
+            error("Git checkout failed. See troubleshooting steps above.")
+          }
+          
+          echo "✅ Code checkout successful"
+        }
         script {
           // For multibranch pipelines, BRANCH_NAME is automatically set by Jenkins
           // Also check GIT_BRANCH which might be set

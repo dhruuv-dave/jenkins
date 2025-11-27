@@ -65,7 +65,37 @@ The `jenkins-entrypoint.sh` script:
 
 This ensures Docker is accessible from Jenkins pipelines without manual intervention.
 
+## Important: Docker CLI Installation
+
+**The Jenkins container now includes Docker CLI pre-installed** via the custom `Dockerfile.jenkins`. 
+
+When you first set up or update Jenkins, you need to **build the custom image**:
+
+```bash
+# Windows
+docker-compose build jenkins
+docker-compose up -d
+
+# Ubuntu
+docker-compose -f docker-compose.ubuntu.yml build jenkins
+docker-compose -f docker-compose.ubuntu.yml up -d
+```
+
+This ensures Docker commands work inside Jenkins pipelines. If you see "command not found" errors for Docker, see `JENKINS_DOCKER_FIX.md` for detailed troubleshooting.
+
 ## Troubleshooting
+
+### Docker Command Not Found (Exit Code 127)
+
+If Jenkins pipeline fails with "ERROR: script returned exit code 127", Docker CLI is not installed in the container.
+
+**Solution:** Rebuild the Jenkins image:
+```bash
+docker-compose build jenkins
+docker-compose up -d
+```
+
+For detailed steps, see `JENKINS_DOCKER_FIX.md`.
 
 ### Permission Denied Errors
 

@@ -1,6 +1,10 @@
 services:
   jenkins:
-    image: jenkins/jenkins:lts
+    # Use custom Jenkins image with Docker CLI pre-installed
+    build:
+      context: .
+      dockerfile: Dockerfile.jenkins
+    image: jenkins-custom:latest
     container_name: jenkins
     ports:
       - "8080:8080"
@@ -8,16 +12,9 @@ services:
     volumes:
       - jenkins_home:/var/jenkins_home
       # Docker socket - works on both Linux and Windows Docker Desktop
+      # This allows Jenkins to communicate with the host Docker daemon
       - /var/run/docker.sock:/var/run/docker.sock
-      # Docker binary - Windows Docker Desktop doesn't need this
-      # On Ubuntu/Linux, use docker-compose.ubuntu.yml instead
-      # - /usr/bin/docker:/usr/bin/docker:ro
-      # Entrypoint script to fix Docker socket permissions on startup
-      - ./jenkins-entrypoint.sh:/usr/local/bin/jenkins-entrypoint.sh:ro
-    # Use custom entrypoint that fixes permissions before starting Jenkins
-    entrypoint: ["/bin/bash", "/usr/local/bin/jenkins-entrypoint.sh"]
-    # Start as root to fix permissions, then jenkins.sh switches to jenkins user
-    user: root
+      # Docker binary is now installed inside the container, no need to mount from host
     restart: unless-stopped
 
 volumes:
