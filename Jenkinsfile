@@ -12,6 +12,8 @@ pipeline {
     timeout(time: 30, unit: 'MINUTES')
     retry(1)
     timestamps()
+    // Disable automatic checkout - we handle it manually in Checkout stage
+    skipDefaultCheckout(true)
   }
   
   // Automatic triggers when code is merged to main branch
@@ -25,6 +27,40 @@ pipeline {
   }
   
   stages {
+    stage('Prepare Workspace') {
+      steps {
+        script {
+          echo "🧹 Preparing workspace..."
+          
+          // Clean up corrupted workspace if it exists
+          def workspaceExists = sh(script: 'test -d .', returnStatus: true) == 0
+          if (workspaceExists) {
+            def isGitRepo = sh(script: 'test -d .git && git rev-parse --git-dir > /dev/null 2>&1', returnStatus: true) == 0
+            if (!isGitRepo) {
+              echo "⚠️  Workspace exists but is not a valid git repository. Cleaning up..."
+              // Remove any partial git files and workspace contents
+              sh '''
+                rm -rf .git .gitignore 2>/dev/null || true
+                # Remove all files except Jenkins-specific directories
+                find . -mindepth 1 -maxdepth 1 ! -name '..' ! -name '.' -exec rm -rf {} + 2>/dev/null || true
+              '''
+              // Try to use workspace cleanup plugin if available
+              try {
+                cleanWs()
+              } catch (Exception e) {
+                echo "Workspace cleanup plugin not available, using manual cleanup"
+              }
+              echo "✅ Workspace cleaned"
+            } else {
+              echo "✅ Workspace is already a valid git repository"
+            }
+          } else {
+            echo "✅ Workspace is clean (empty)"
+          }
+        }
+      }
+    }
+    
     stage('Validate Environment') {
       steps {
         script {
@@ -95,27 +131,10 @@ pipeline {
         script {
           echo "📥 Checking out source code..."
           
-          // Clean up workspace if it's in a bad state
-          def isGitRepo = sh(script: 'test -d .git && git rev-parse --git-dir > /dev/null 2>&1', returnStatus: true) == 0
-          if (!isGitRepo) {
-            echo "⚠️  Workspace is not a valid git repository. Cleaning up..."
-            // Remove any partial git files and workspace contents
-            sh '''
-              rm -rf .git .gitignore 2>/dev/null || true
-              # Remove all files except Jenkins-specific directories
-              find . -mindepth 1 -maxdepth 1 ! -name '..' ! -name '.' -exec rm -rf {} + 2>/dev/null || true
-            '''
-            // Try to use workspace cleanup plugin if available, otherwise manual cleanup above is sufficient
-            try {
-              cleanWs()
-            } catch (Exception e) {
-              echo "Workspace cleanup plugin not available, using manual cleanup"
-            }
-          }
-          
           // Perform checkout with retry logic
           def checkoutAttempts = 3
           def checkoutSuccess = false
+          def lastError = ""
           
           for (int i = 1; i <= checkoutAttempts; i++) {
             try {
@@ -128,9 +147,13 @@ pipeline {
               def gitStatus = sh(script: 'git rev-parse --is-inside-work-tree 2>/dev/null', returnStdout: true).trim()
               if (gitStatus == "true") {
                 checkoutSuccess = true
+                echo "✅ Checkout successful!"
                 break
+              } else {
+                throw new Exception("Git repository not properly initialized after checkout")
               }
             } catch (Exception e) {
+              lastError = e.message
               echo "⚠️  Checkout attempt ${i} failed: ${e.message}"
               if (i < checkoutAttempts) {
                 echo "Retrying in 2 seconds..."
@@ -140,33 +163,51 @@ pipeline {
                   cleanWs()
                 } catch (Exception cleanupError) {
                   // Manual cleanup if plugin not available
-                  sh 'rm -rf .git .gitignore * .* 2>/dev/null || true'
+                  sh '''
+                    rm -rf .git .gitignore * .* 2>/dev/null || true
+                    find . -mindepth 1 -maxdepth 1 ! -name '..' ! -name '.' -exec rm -rf {} + 2>/dev/null || true
+                  '''
                 }
               }
             }
           }
           
           if (!checkoutSuccess) {
+            echo ""
             echo "❌ ERROR: Git checkout failed after ${checkoutAttempts} attempts!"
+            echo "Last error: ${lastError}"
             echo ""
-            echo "TROUBLESHOOTING:"
-            echo "1. Check Jenkins job configuration:"
-            echo "   - Go to Jenkins → Your Job → Configure"
-            echo "   - Verify 'Source Code Management' section is configured correctly"
-            echo "   - Check repository URL and credentials"
+            echo "=========================================="
+            echo "TROUBLESHOOTING STEPS:"
+            echo "=========================================="
             echo ""
-            echo "2. Clean workspace manually:"
-            echo "   - Go to Jenkins → Your Job → Workspace"
-            echo "   - Click 'Wipe Out Current Workspace'"
-            echo "   - Or run: docker exec jenkins rm -rf /var/jenkins_home/workspace/my-sample-app_main"
+            echo "1. CLEAN WORKSPACE:"
+            echo "   Option A: Jenkins UI → Your Job → 'Wipe Out Current Workspace'"
+            echo "   Option B: docker exec jenkins rm -rf /var/jenkins_home/workspace/my-sample-app_main"
             echo ""
-            echo "3. Check Git credentials:"
-            echo "   - Verify GitHub token has correct permissions"
-            echo "   - Check credential ID matches in job configuration"
+            echo "2. CHECK JENKINS JOB CONFIGURATION:"
+            echo "   - Go to: Jenkins → Your Job → Configure"
+            echo "   - Verify 'Source Code Management' section:"
+            echo "     * Repository URL: https://github.com/dhruuv-dave/jenkins.git"
+            echo "     * Branch: */main (or your branch pattern)"
+            echo "     * Credentials: git-token2 (or your credential ID)"
             echo ""
-            echo "4. Verify repository access:"
+            echo "3. FIX GITHUB TOKEN PERMISSIONS:"
+            echo "   The error shows: 'Resource not accessible by personal access token'"
+            echo "   - Go to: GitHub → Settings → Developer settings → Personal access tokens"
+            echo "   - Edit your token and ensure these scopes:"
+            echo "     ✅ repo (Full control of private repositories)"
+            echo "     ✅ admin:repo_hook (if using webhooks)"
+            echo "   - Update the credential in Jenkins"
+            echo ""
+            echo "4. VERIFY REPOSITORY ACCESS:"
             sh 'echo "Current directory: $(pwd)"'
             sh 'ls -la || echo "Directory listing failed"'
+            echo ""
+            echo "5. TEST GIT ACCESS MANUALLY:"
+            echo "   docker exec jenkins git ls-remote https://github.com/dhruuv-dave/jenkins.git"
+            echo ""
+            echo "=========================================="
             error("Git checkout failed. See troubleshooting steps above.")
           }
           
